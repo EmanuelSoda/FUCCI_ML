@@ -8,7 +8,7 @@
 
 The pipeline is created using the [tidymodels](https://www.tidymodels.org/) framework. The random forest model trained and stored as docker container can be found [here](https://hub.docker.com/repository/docker/emanuelsoda/rf_semi_sup/general) .
 
-The model stored as `.rds` file can be found here
+The model stored as `.rds` file can be found [here](models/random_forest_model.rds)
 
 ![The Machine Learning pipeline followed to create the quality model. Using timetk time-series associated features are extracted from the list of manually annotated tracks. A random forest model is then trained to predict whether a track is cycling or not.](images/model_creation.png)
 
