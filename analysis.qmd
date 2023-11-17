@@ -1,0 +1,620 @@
+---
+title: "FUCCI cell Tracking: NB4 experiment 21-04-2023 new inhibitors new model"
+editor_options: 
+  chunk_output_type: console
+execute:
+  warning: false
+theme: Pulse
+---
+
+# Load Library
+
+# rep1
+
+```{r Load Library, warning=FALSE, message=FALSE}
+library(tidyverse)
+theme_set(theme_light(base_size = 12))
+color_GREEN <- "#2ca25f"  
+color_RED <- "#de2d26"
+color_HUE <- "#08519c"
+color_ORANGE <- "#fd8d3c"
+color_yellow <- "#ffeda0"
+colors <- c(color_HUE, color_GREEN, color_RED)
+cond <-  c("DMSO", "Ribociclib 50nM", "Ribociclib 75nM", "Ribociclib 100nM",
+           "Ribociclib 125nM", "Ribociclib 150nM", "PF 25nM", "PF 50nM",
+           "PF 75nM", "PF 100nM", "PF 125nM", "Palbociclib 50nM")
+setwd("~/Documents/IEO/FUCCI_cell_Tracking/")
+```
+
+# Preprocessing
+
+In this chunk of code the splitted csv files in this case $150$ are read and concatenated in one big table. Then the filename is used to create column for the demultiplexing of the conditions.
+
+```{r Data Preprocessing, eval=FALSE}
+path <- "data/230421_Thunder_hsb_nb4_q03/"
+filelist <- 
+  list.files(path=path, pattern = "*.csv")
+
+data <- tibble(filename = filelist) %>% 
+  mutate(data =  map(paste0(path, filename), 
+                     ~read.delim(.x, sep = ",", dec = "."))) %>% 
+  separate("filename", c("Well", "lif", "FoV", "tif", "csv")) %>% 
+  unnest(data) %>% 
+  mutate(Track_Key = paste(Well, FoV, TRACK_ID, sep = "_")) %>% 
+
+  # Demultiplexing of the conditions
+  mutate(Condition = case_when(
+    Well == "A1" ~ "DMSO",
+    Well == "A2" ~ "Ribociclib 50nM",
+    Well == "A3" ~ "Ribociclib 75nM",
+    Well == "A4" ~ "Ribociclib 100nM",
+    Well == "B1" ~ "Ribociclib 125nM",
+    Well == "B2" ~ "Ribociclib 150nM",
+    Well == "B3" ~ "PF 25nM",
+    Well == "B4" ~ "PF 50nM",
+    Well == "C1" ~ "PF 75nM",
+    Well == "C2" ~ "PF 100nM", 
+    Well == "C3" ~ "PF 125nM",
+    Well == "C4" ~ "Palbociclib 50nM",
+    
+  )) %>% 
+  dplyr::select(Track_Key, FRAME, starts_with("MEAN"), Condition) 
+
+rm(path, filelist)
+```
+
+## Imputation and smoothing
+
+```{r, eval=FALSE}
+data <- crossing(Track_Key = unique(data$Track_Key),
+                       FRAME = seq(min(data$FRAME), 
+                                   max(data$FRAME) - 1)) %>%
+  left_join(data, by= c("Track_Key", "FRAME")) %>% 
+  fill(Condition, .direction = "down") %>%
+  fill(Condition, .direction = "up")
+```
+
+```{r, eval=FALSE}
+k <- 3
+maxgap <- 5
+data_table_imputed <-  
+  data %>% 
+  mutate(imputed = if_else(is.na(MEAN_INTENSITY_CH4), "yes", "no")) %>% 
+  group_by(Track_Key) %>% 
+  mutate(MEAN_RED = imputeTS::na_ma(MEAN_INTENSITY_CH1, 
+                                    k = k, maxgap = maxgap),
+         MEAN_GREEN = imputeTS::na_ma(MEAN_INTENSITY_CH2, k = k, 
+                                      weighting = "simple", 
+                                      maxgap = maxgap),
+         BRIGTHNESS = imputeTS::na_ma(MEAN_INTENSITY_CH3, 
+                                k = k, maxgap = maxgap),
+         HUE = imputeTS::na_ma(MEAN_INTENSITY_CH4, 
+                                k = k, maxgap = maxgap))  %>%
+  ungroup() %>% 
+  drop_na(MEAN_GREEN, MEAN_RED, HUE)  
+
+
+lambda <- 0.0001
+data_table_imputed <-  data_table_imputed %>% 
+  arrange(FRAME) %>% 
+  group_by(Track_Key) %>% 
+  mutate(MEAN_GREEN = smooth.spline(MEAN_GREEN, 
+                                    cv = FALSE, lambda = lambda)$y, 
+         MEAN_RED = smooth.spline(MEAN_RED, 
+                                  cv = FALSE, lambda = lambda)$y,
+         BRIGTHNESS = smooth.spline(BRIGTHNESS, 
+                              cv = FALSE, lambda = lambda)$y,
+         HUE = smooth.spline(HUE, 
+                              cv = FALSE, lambda = lambda)$y) %>%
+  ungroup()
+
+summary(data_table_imputed)
+```
+
+```{r, eval=FALSE}
+data_table_imputed %>%  
+  select(Track_Key, FRAME, MEAN_RED, MEAN_GREEN, BRIGTHNESS, HUE, Condition) %>% 
+  write_csv(file = "data/read_green_hue_FUCCI_I230421_NB4_new_inhibitors.csv")
+rm(data, data_table_imputed)
+```
+
+# Start Analysis
+
+## Read data
+
+```{r read data}
+data_table <- 
+  read_csv("data/read_green_hue_FUCCI_I230421_NB4_new_inhibitors.csv")
+```
+
+```{r,echo=FALSE}
+reactable(
+ mutate(data_table, across(where(is.numeric), round, 3)),
+  defaultColDef = colDef(
+    align = "center",
+    minWidth = 70,
+    headerStyle = list(background = "#f7f7f8")
+  ),
+  bordered = TRUE,
+  highlight = TRUE
+)
+```
+
+## Normalize data
+
+In this chunk the value of **green**, **red**, **hue** and brightness are scaled in the range \[0, 1\] using min-max scaling:
+
+$$
+ x' = \frac{x - min(x)}{max(x) - min(x)}
+$$ {#eq-min_max}
+
+```{r normalize data }
+data_table <- data_table %>% 
+  group_by(Track_Key) %>% 
+  mutate(MEAN_GREEN = timetk::normalize_vec(MEAN_GREEN, silent = TRUE),
+         MEAN_RED = timetk::normalize_vec(MEAN_RED, silent = TRUE),
+         HUE = timetk::normalize_vec(HUE, silent = TRUE),
+         BRIGTHNESS = timetk::normalize_vec(BRIGTHNESS, silent = TRUE)) %>% 
+  ungroup() 
+```
+
+```{r,echo=FALSE}
+reactable(
+ mutate(data_table, across(where(is.numeric), round, 3)),
+  defaultColDef = colDef(
+    align = "center",
+    minWidth = 70,
+    headerStyle = list(background = "#f7f7f8")
+  ),
+  bordered = TRUE,
+  highlight = TRUE
+)
+```
+
+## Visualize a sample of the tracks
+
+We can select at random 30 tracks to have a look to the data. As we can notice that lots of tracks are wrong and only for example following the tracks are acceptable:
+
+-   **A_4_R25_18**
+
+-   **A_4_R24_22**
+
+```{r}
+set.seed(42)
+sample_tracks <- sample(data_table$Track_Key, size = 30)
+
+data_table %>% 
+  filter(Track_Key %in% sample_tracks) %>% 
+  pivot_longer(c("MEAN_GREEN", "MEAN_RED")) %>% 
+  ggplot(aes(FRAME, value, color = name)) +
+  geom_line(show.legend = FALSE) +
+  scale_color_manual(values = colors[2:3]) +
+  facet_wrap(vars(Track_Key)) +
+  labs(x = NULL, y = NULL)
+```
+
+## Identify the correct tracks
+
+Fortunately for us in another Quarto document we have trained a model to predict whether a track is of good or bad quality. But in order to use this model we have first to extract from the tracks the associated features on which the model has been trained. To do that we are going to use timetk.
+
+```{r timetk_feature_extraction}
+source("functions/timetk_feature_extraction.R")
+```
+
+```{r feature_extraction}
+features <- c("frequency","stl_features", "crossing_points",
+              "acf_features","outlierinclude_mdrmd", "arch_stat",
+              "max_level_shift","max_var_shift","entropy","pacf_features",
+              "firstmin_ac","std1st_der","stability", "firstzero_ac",
+              "hurst", "lumpiness","motiftwo_entro3")
+period <- "auto" # prima qui era 52
+tsfeature_tbl_green <- 
+  timetk_feature_extraction(data_table = data_table, variable = MEAN_GREEN, 
+                            group = Track_Key, .prefix = "green_",
+                            features = features, period = period)
+tsfeature_tbl_red <- 
+  timetk_feature_extraction(data_table = data_table, variable = MEAN_RED, 
+                            group = Track_Key, .prefix = "red_",
+                            features = features, period = period)
+
+
+tsfeature_tbl <- tsfeature_tbl_red %>% 
+  left_join(tsfeature_tbl_green, by = "Track_Key")
+summary(tsfeature_tbl)
+rm(tsfeature_tbl_green, tsfeature_tbl_red)
+```
+
+```{r}
+tsfeature_tbl %>% 
+  write_delim("data/FUCCI_cell_Tracking_nb4_230422_new_inhibitors_feature.txt")
+```
+
+```{r,echo=FALSE}
+reactable(
+ mutate(tsfeature_tbl, across(where(is.numeric), round, 3)),
+  defaultColDef = colDef(
+    align = "center",
+    minWidth = 70,
+    headerStyle = list(background = "#f7f7f8")
+  ),
+  bordered = TRUE,
+  highlight = TRUE
+)
+```
+
+## Quality prediction
+
+Once the feature are extracted the trained model can be used to predict the quality.
+
+```{r quality_prediction}
+tsfeature_tbl <- read_delim("data/FUCCI_cell_Tracking_nb4_230422_new_inhibitors_feature.txt")
+
+rf_model_quality <- 
+  read_rds("models/random_forest_model.rds")
+  
+predicted_tracks <- parsnip::augment(rf_model_quality, tsfeature_tbl) %>%
+  dplyr::select(Track_Key, .pred_class, .pred_Cycling, ".pred_Not Cycling") %>% 
+  dplyr::filter(.pred_Cycling >= 0.7 | .pred_class == "Not Cycling")
+
+
+predicted_tracks %>%  count(.pred_class) %>% 
+  ggplot(aes(n , .pred_class, fill = .pred_class)) +
+  geom_col(show.legend = FALSE, position = position_stack()) + 
+  geom_label(aes(label = n), position = position_stack(vjust = 0.5),
+             fill = "white", size = 30) +  
+  labs(x = "# of elements", y = "Prediction") +
+  ggsci::scale_fill_lancet()  + 
+  scale_x_log10() 
+```
+
+Selecting at random 30 tracks we can know see that much of the tracks shows good quality even though are still present some bad tracks. Those are error made by the model.
+
+```{r good_track_visualization}
+sample_tracks <- predicted_tracks %>%  
+  dplyr::slice_max(.pred_Cycling, n = 90)%>% 
+  dplyr::pull(Track_Key) 
+
+
+sample_tracks <- predicted_tracks %>%  
+   dplyr::filter(.pred_Cycling >= 0.7) %>% 
+  dplyr::slice_sample(n = 100) %>% 
+  dplyr::pull(Track_Key) 
+
+data_table %>%
+  filter(Track_Key %in% sample_tracks) %>% 
+  pivot_longer(c("MEAN_GREEN", "MEAN_RED")) %>% 
+  ggplot(aes(FRAME, value, color = name)) +
+  geom_line(show.legend = FALSE) +
+  scale_color_manual(values = c("#2ca25f","#de2d26")) +
+  facet_wrap(vars(Track_Key)) +
+  scale_y_continuous(n.breaks = 2) +
+  scale_x_continuous(n.breaks = 3) +
+  labs(x = NULL, y = NULL) +
+  theme_light(base_size = 12)
+```
+
+# Cell cycle quantification
+
+## Phase identification
+
+Now that we have filtered our tracks we can use the Hue intensity to assign a state to each frame.
+
+```{r phase_identification}
+predicted_tracks_good <- predicted_tracks %>% 
+  dplyr::filter(.pred_Cycling >= 0.7) %>%  pull(Track_Key) 
+
+  
+data_table_good <- data_table %>% 
+  dplyr::filter(Track_Key %in% predicted_tracks_good) 
+
+data_table_good <- data_table_good  %>%  drop_na(HUE) %>%  
+  mutate(phase = case_when(
+    HUE >= 0 & HUE < 0.65 ~ "G1",
+    HUE >= 0.65 & HUE <= 0.85 ~ "G2/M",
+    HUE >= 0.85 ~ "S"
+  )) %>% ungroup()
+```
+
+```{r}
+data_table_good %>% 
+  dplyr::distinct(Track_Key, Condition) %>% 
+  dplyr::count(Condition)
+```
+
+```{r}
+data_table_good %>%  
+  write_delim("filtered_good/NB4_230421_new_inhibitors_good.txt")
+```
+
+```{r,echo=FALSE}
+reactable(
+ mutate(data_table_good, across(where(is.numeric), round, 3)),
+  defaultColDef = colDef(
+    align = "center",
+    minWidth = 70,
+    headerStyle = list(background = "#f7f7f8")
+  ),
+  bordered = TRUE,
+  highlight = TRUE
+)
+```
+
+## Visualize phase annotation
+
+We can create a heatmap like visualization in which in the x-axis we put time and on the y-axis we put each track. As can be seen basically all the tracks follow more than one cell.
+
+```{r, vis_phase_anno}
+data_table_good %>% 
+  mutate(FRAME = as.factor(FRAME))  %>%
+  mutate(Condition = factor(Condition, levels = cond)) %>% 
+  ggplot(aes(FRAME , Track_Key, fill = phase)) +
+  geom_tile(show.legend = FALSE) +
+  theme(axis.text =   element_blank(), 
+        axis.ticks = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  scale_fill_manual(values = c(color_RED, color_ORANGE, color_GREEN)) +
+  facet_wrap(vars(Condition), scales = "free_y", ncol = 1) +
+  labs(x = NULL, y = NULL)
+```
+
+In order to further clean our data we can now take advantage of the annotation and using a simple algorithm to split the tracks in single cell and to select the correct frame to identify the correct cell cycle which start with a or more greens followed by one or more oranges and ends with one or more reds. This algorithm is implemented in the function split_cell_cycle.R .
+
+First of all we split the bigger table into smaller tables (one for each tracks). and then on each of this table we apply the function.
+
+```{r split_cell_cycle_splitted}
+source("functions/split_cell_cycle.R")
+
+list_data_table_good <- data_table_good %>% 
+  select(Track_Key, FRAME, HUE, MEAN_GREEN, MEAN_RED, Condition, phase) %>% 
+  group_split(Track_Key) %>% 
+  set_names(unique(data_table_good$Track_Key))
+
+
+split_cell_cycle_splitted <- 
+  reduce(map(list_data_table_good, split_cell_cycle), bind_rows) %>%  
+  drop_na()
+
+write_csv(split_cell_cycle_splitted,
+          "data/nb4_230422_new_inhibitors_split_cell_cycle_splitted_new_model.csv")
+split_cell_cycle_splitted <- 
+  read_csv("data/nb4_230422_new_inhibitors_split_cell_cycle_splitted_new_model.csv")
+
+split_cell_cycle_splitted %>% 
+  distinct(Track_Key, Condition) %>% 
+  dplyr::count(Condition)
+```
+
+```{r,echo=FALSE}
+reactable(
+ mutate(split_cell_cycle_splitted, across(where(is.numeric), round, 3)),
+  defaultColDef = colDef(
+    align = "center",
+    minWidth = 70,
+    headerStyle = list(background = "#f7f7f8")
+  ),
+  bordered = TRUE,
+  highlight = TRUE
+)
+```
+
+If we use the same visualization as before we can now see that each track now identify only one cell.
+
+```{r vis_split_cell_cycle_splitted}
+split_cell_cycle_splitted %>% 
+  group_by(Track_Key, phase) %>%  
+  add_count(name = "phase_duration") %>%  
+  ungroup() %>% 
+  mutate(FRAME = as.factor(FRAME),
+         Condition = factor(Condition, levels = cond)) %>% 
+  mutate(phase = factor(phase, levels = c("G1", "G1/S", "S", "G2/M"))) %>% 
+  ggplot(aes(FRAME, Track_Key, fill = phase)) +
+  geom_tile(show.legend = FALSE, color = "black", linewidth = 0.1) +
+  theme(axis.text = element_blank(), 
+        axis.ticks = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  scale_fill_manual(values = c(color_RED, color_yellow, color_GREEN, color_ORANGE)) +
+  facet_wrap(vars(Condition), scales = "free_y") +
+  labs(x = NULL, y = NULL)
+```
+
+Maybe a more effective visualization is the following in which we do not consider the time passed and we create an heatmap in which all the tracks start at the same time. As can be seen as supposed increasing the concentration of Palbociclib the time spent in G1 increase.
+
+NB: Since the Palbo 250 nM contains only one predicted tracks in this plot is removed (It is just for data visualization purpose)
+
+```{r vis_split_cell_cycle_splitted_order}
+split_cell_cycle_splitted %>% 
+  mutate(Condition = factor(Condition, levels = cond)) %>% 
+  group_by(Track_Key) %>% 
+  mutate(point = as.factor(1:n()))  %>% 
+  group_by(Track_Key, phase) %>%  
+  add_count(name = "duration") %>%  
+  ungroup() %>% 
+  mutate(Track_Key = fct_reorder(Track_Key, duration)) %>% 
+  mutate(phase = factor(phase, levels = c("G1", "G1/S", "S", "G2/M"))) %>% 
+  ggplot(aes(point, Track_Key, fill = phase)) +
+  geom_tile(show.legend = FALSE, color = "black", linewidth = 0.001) +
+  labs(x = NULL, y = NULL) + 
+  theme(axis.text = element_blank(), 
+        axis.ticks = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()) +
+  scale_fill_manual(values = c(color_RED, color_yellow, color_GREEN, color_ORANGE)) +
+  facet_wrap(vars(Condition), scales = "free", ncol = 2)
+```
+
+Or maybe a more classical representation suit more your need
+
+```{r cycle summary}
+summary <- split_cell_cycle_splitted %>%
+  #dplyr::filter(Condition != "Palbo 250 nM") %>% 
+  dplyr::filter(str_detect(Track_Key, "_cycle:1")) %>% 
+  mutate(Condition = factor(Condition, levels = cond)) %>%
+  group_by(Track_Key, phase) %>%  
+  add_count(name = "duration") %>%  
+  distinct(Track_Key,
+           Condition,
+           duration) %>%
+  group_by(Track_Key, Condition) %>% 
+  summarise(cell_cycle = sum(duration)) %>% 
+  group_by(Condition) %>%
+  add_count(Track_Key) %>%
+  summarise(cell_cycle = median(cell_cycle),
+            number_of_cell = sum(n)) %>% 
+  mutate(label = paste0(Condition, "\nCell cycle duration: ", cell_cycle, 
+                        "\n# of cells: ", number_of_cell))
+
+reactable(summary,
+    defaultColDef = colDef(
+      align = "center",
+      minWidth = 70,
+      headerStyle = list(background = "#f7f7f8")
+    ),
+    bordered = TRUE,
+    highlight = TRUE
+  )
+```
+
+```{r}
+NB4_22_04_22 <- list(split_cell_cycle_NB4_22_04_22  = split_cell_cycle_splitted,
+                        summary_NB4_22_04_22  = summary)
+
+write_rds(NB4_22_04_22,file = "NB4_22_04_22_new_model.rds")
+```
+
+```{r cycle_vis}
+split_cell_cycle_splitted %>%  
+  mutate(Condition = factor(Condition, levels = cond)) %>% 
+
+  #dplyr::filter(Condition != "Palbo 250 nM") %>% 
+  dplyr::filter(str_detect(Track_Key, "_cycle:1")) %>% 
+  group_by(Track_Key, phase) %>%  
+  add_count(name = "duration") %>% 
+  distinct(Track_Key, Condition, duration) %>%    
+  mutate(phase = factor(phase, levels = c("G1", "G1/S", "S", "G2/M"))) %>% 
+  ungroup() %>% 
+  ggplot(aes(Condition, duration, fill = phase)) +
+  geom_violin(aes(fill = phase), show.legend = FALSE, 
+              position = position_dodge(1), width = 1.5) +
+  geom_boxplot(show.legend = FALSE, aes(fill = phase), color = "black",
+               position = position_dodge(1), width = 0.1) +
+  scale_y_continuous(labels = scales::label_dollar(prefix = "", suffix = "h"),
+                     n.breaks = 20) + 
+  scale_x_discrete(labels = summary$label) +
+  theme_light(base_size = 20) +
+  labs(x = NULL, y = "Hours spent") +
+  scale_fill_manual(values = c(color_RED, color_yellow, color_GREEN, color_ORANGE)) 
+```
+
+```{r}
+to_plot <- split_cell_cycle_splitted %>%
+    dplyr::filter(str_detect(Track_Key, "_cycle:1")) %>% 
+    mutate(Condition = factor(Condition, levels = rev(cond))) %>%
+    group_by(Track_Key, phase) %>%  
+    add_count(name = "duration") %>%  
+    distinct(Track_Key,
+             Condition,
+             duration)  %>%  
+  group_by(Condition, phase) %>%  
+  summarise(duration = median(duration)) %>% 
+  ungroup() %>% 
+  mutate(phase = factor(phase, levels = rev(c("S", "G2/M", "G1")))) %>% 
+  mutate(label = paste0(round(duration, 2), "h"))  
+
+label_y <- to_plot %>% 
+  group_by(Condition) %>% 
+  summarise(duration = sum(duration)) %>% ungroup() %>% 
+  mutate(label_y = paste0(Condition, "\n", duration, "h")) %>%  
+  pull() 
+  
+ggplot(to_plot, aes(x = Condition, y = duration, fill = phase)) + 
+  geom_col(position=position_fill(0.5), 
+           show.legend = FALSE, color = "black") +
+  geom_label(aes(label = label),
+             show.legend = FALSE,
+             size=10, position = position_fill(0.5)) +
+  scale_fill_manual(values = rev(c(color_GREEN, color_ORANGE, color_RED))) +
+  labs(x = NULL, y  = NULL, fill = NULL)  +
+  scale_x_discrete(labels = label_y) +
+   theme(axis.text.x = element_blank(), 
+         panel.grid.major.x = element_blank(),
+         panel.grid.minor.x = element_blank(),
+         axis.ticks.x = element_blank()) + 
+  coord_flip()
+```
+
+## Determine how many cell to have robust estimation
+
+```{r}
+map_mean_variance <- map(.x = seq(0.1, 1, 0.2), 
+             .f =  ~ split_cell_cycle_splitted %>% 
+               #dplyr::filter(Condition == "DMSO") %>% 
+               group_by(Track_Key, phase, Condition) %>%  
+               dplyr::count(name = "duration") %>%  
+               ungroup %>% 
+               rsample::bootstraps(prop = .x, strata = phase) %>% 
+               dplyr::mutate(id = map_int(splits, nrow)) ) %>% 
+  reduce(bind_rows) %>% 
+               mutate(stats = map(splits, .f = ~  rsample::training(.x) %>%  
+                                        group_by(phase, Condition) %>% 
+                                        summarise(mean = mean(duration, na.rm = TRUE),
+                                                  sd = sd(duration, na.rm = TRUE)), .groups = "drop"))
+
+set.seed(123)
+sim_plot <- split_cell_cycle_splitted %>%
+  #dplyr::filter(Condition == "DMSO") %>%
+  group_by(Track_Key, phase, Condition) %>%
+  dplyr::count(name = "duration") %>%
+  ungroup() %>%
+  rsample::bootstraps(strata = phase,times = 10) %>%
+  dplyr::mutate(id = map_int(splits, nrow))  %>% 
+  mutate(stats = map(splits, .f = ~  rsample::analysis(.x) %>%  
+                       group_by(phase, Condition) %>% 
+                       summarise(mean = mean(duration, na.rm = TRUE),
+                                 sd = sd(duration, na.rm = TRUE))))  %>% 
+  select(id, stats) %>%  unnest(stats) %>%   
+  mutate(phase = factor(phase, levels = c("G1", "G1/S", "S", "G2/M"))) %>% 
+  arrange(id) %>% 
+  dplyr::filter(Condition != "Palbo 250 nM") %>% 
+  mutate(Condition = fct_rev(Condition)) %>% 
+  mutate(id = fct_inorder(as.factor(id))) 
+
+ggplot(sim_plot, aes(Condition, mean, color = phase)) +
+  geom_pointrange(aes(ymin = mean - sd, ymax = mean + sd), show.legend = FALSE,
+                  position = position_dodge2(width = 1)) +
+  #geom_boxplot(show.legend = FALSE) +
+  scale_y_continuous(n.breaks = 30) +
+  scale_color_manual(values = c(color_RED, color_yellow, 
+                               color_GREEN, color_ORANGE)) +
+   labs(x = NULL, y = "Mean Hours spent (montecarlo simulation)")  
+
+
+```
+
+```{r}
+prova <- map(
+  seq(1, 56, 1),
+  .f = ~ split_cell_cycle_splitted %>%
+    dplyr::filter(Condition == "DMSO") %>%
+    group_by(Track_Key, phase, Condition) %>%
+    dplyr::count(name = "duration") %>%
+    group_by(Condition, phase) %>%
+    slice_sample(n = .x)  %>%
+    group_by(Condition, phase) %>%
+    summarise(duration = mean(duration, na.rm = TRUE)) %>%
+    mutate(id = paste0("num_cell_", .x))
+) %>%
+  reduce(bind_rows) %>%
+  mutate(n_cell = as.numeric(str_remove(id, "num_cell_")))
+
+
+prova %>% 
+  ggplot(aes(n_cell, duration)) +
+  geom_line(linewidth = 2, colour = "#82518c") +
+  geom_point(size = 3) +
+  theme_light(base_size = 30) +
+  scale_y_continuous(n.breaks = 5) +
+  facet_wrap(vars(phase), scales = "free_y") +
+  labs(x = "Number of cell", y = "Mean duration")
+```

@@ -1,0 +1,447 @@
+---
+title: "create_quality_model_kasumi_nb4"
+format: html
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r}
+library(tidyverse)
+library(timetk)
+library(tidymodels)
+library(finetune)
+theme_set(theme_light(base_size = 15))
+```
+
+```{r}
+plot_number_observation <- function(table){
+  table %>% ggplot(aes(quality, fill = quality)) +
+    geom_bar(stat = "count", show.legend = FALSE, color = "black", 
+             linewidth = 1.5) +
+    ggsci::scale_fill_lancet() +
+    scale_y_continuous(n.breaks = 15) + 
+    labs(x = NULL, y = "Number of tracks") 
+}
+```
+
+```{r}
+nb4 <- read_delim(file = "data/FUCCI_cell_Tracking_nb4_220422_new_feature.txt") %>% 
+  drop_na() 
+annotation_nb4 <- readxl::read_xlsx("data/220429_Tracks_annotation.xlsx") %>% 
+  dplyr::select(Track_Key, quality = `Track type`) %>% 
+  mutate(quality = if_else(is.na(quality), "Not Cycling", "Cycling"))
+
+nb4 <- nb4 %>%  left_join(annotation_nb4, by = join_by(Track_Key))
+kasumi <-read_delim(file = "data/FUCCI_cell_Tracking_Kasumi_220729_feature.txt") %>% 
+  left_join(read_delim("data/annotated_kasumi.txt"), by = join_by(Track_Key)) %>% 
+  dplyr::filter(quality != "unknown") %>%  drop_na() 
+
+adherent <- read_delim("FUCCI_cell_aderenti_good_traning.txt") %>% 
+   mutate(quality = factor("Cycling"))
+
+training_dataset <- bind_rows(adherent, nb4) %>% 
+  dplyr::select(-contains("period"))  %>%  drop_na()
+
+training_dataset <- training_dataset %>%  
+  mutate(quality = factor(quality, levels = c("Not Cycling", "Cycling")))
+
+training_dataset %>%  dplyr::count(quality)
+plot_number_observation(training_dataset) 
+```
+
+```{r}
+set.seed(123)
+track_splits <- initial_split(training_dataset, prop = 0.80,
+                              strata = quality)
+
+track_train <- training(track_splits)
+track_test <- testing(track_splits)
+
+
+set.seed(345)
+track_folds <-  vfold_cv(track_train, strata = quality)
+track_folds
+```
+
+## Create a recipie
+
+```{r}
+set.seed(345)
+track_recipe <- recipe(quality ~ ., 
+                       data = track_train) %>%
+  update_role(Track_Key, new_role = "ID")  %>% 
+  step_nzv(all_predictors()) %>% 
+  themis::step_downsample(quality, seed = 100) %>%  #themis::step_bsmote(quality)
+  step_normalize(all_numeric_predictors()) 
+
+prep(track_recipe) %>%  juice()  %>%  #dplyr::count(quality)
+  pivot_longer(where(is.numeric), names_to = "feature") %>% 
+  mutate(channel = if_else(str_detect(feature, "red"), "red", "green")) %>% 
+  mutate(feature = str_remove(feature, "red_"), 
+         feature = str_remove(feature, "green_")) %>% 
+  mutate(feature = tidytext::reorder_within(feature, -value, channel),
+         feature = fct_inorder(feature)) %>% 
+ 
+  ggplot(aes(value, feature, fill = quality)) +
+  geom_boxplot(show.legend = FALSE, outlier.colour = "grey50",
+               outlier.alpha  = 0.2) +
+  labs(x = NULL, y = NULL, fill = NULL) +
+  ggsci::scale_fill_lancet()  +
+  tidytext::scale_y_reordered() +
+  facet_wrap(vars(channel), scales = "free_y") +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+
+
+pls_rep <- track_recipe %>% 
+  step_pls(all_numeric_predictors(), outcome = "quality", num_comp = 3)
+
+prep(pls_rep) %>%  juice() %>%
+  ggplot(aes(PLS1, PLS2, color = quality, shape = quality)) +
+  geom_point(size = 5, show.legend = FALSE) +
+  ggsci::scale_color_lancet() 
+```
+
+# Create a model
+
+```{r}
+track_rand_forest <- rand_forest(trees = tune(),
+                                 mtry = tune(),
+                                 min_n = tune()) %>%
+  set_engine('ranger', importance = "impurity") %>%
+  set_mode('classification')
+```
+
+## tuning
+
+```{r}
+set.seed(42)
+tree_grid <- grid_max_entropy(trees(range = c(500, 4000)),
+                          mtry(range = c(10, 50)), 
+                          min_n(range = c(2, 10)),
+                          size = 10)
+
+track_wf <- workflow() %>%
+  add_recipe(track_recipe) %>%
+  add_model(track_rand_forest)
+
+set.seed(42)
+doParallel::registerDoParallel(cores = 8)
+track_wf_tuned <-  track_wf %>% 
+  tune_grid(resamples = track_folds, 
+                  grid = tree_grid,
+                  metrics = metric_set(accuracy, roc_auc, # ppv, npv, 
+                                       sensitivity, specificity,
+                                       mn_log_loss),
+                  control = control_grid(save_pred = TRUE))
+
+track_wf_tuned %>%  collect_metrics(summarize = TRUE)  %>%    
+  pivot_longer(mtry:min_n) %>% 
+  mutate(name = case_when(
+    name == "mtry" ~ "# Randomly Selected Predictors",
+    name == "trees" ~ "# Trees",
+    name == "min_n" ~ "Minimal Node Size"
+  )) %>% 
+  mutate(group = paste0(.metric, name)) %>% 
+  ggplot(aes(value, mean, color = .metric)) +
+  geom_line(aes(group = group), size = 2, show.legend = FALSE) + 
+   geom_point(show.legend = FALSE, size = 5, color = "black") +
+  labs(x = "Parameter value", y = "Mean estimate") +
+  facet_grid(rows = vars(.metric), cols = vars(name), 
+             scales = "free") +
+  ggsci::scale_fill_locuszoom() +
+  ggsci::scale_color_locuszoom() +
+  theme(text = element_text(size = 20))
+
+
+track_wf_tuned %>%  collect_metrics(summarize = FALSE)  %>%  
+  dplyr::mutate(.metric = fct_reorder(.metric, .estimate)) %>% 
+  ggplot(aes(.metric, .estimate)) +
+  geom_boxplot() +
+  facet_wrap(vars(.metric), scales = "free")
+```
+
+```{r}
+best_auc <- select_best(track_wf_tuned, "roc_auc")
+best_auc
+
+final_rf <- finalize_workflow(
+  track_wf,
+  best_auc
+)
+final_rf
+```
+
+```{r}
+fitted_track <- last_fit(final_rf, track_splits, 
+                         metrics = metric_set(accuracy, roc_auc, 
+                                       sensitivity, specificity))  
+  
+fitted_track %>% collect_metrics(summarize = FALSE) %>% 
+  dplyr::mutate(.metric = fct_reorder(.metric, .estimate)) %>% 
+  ggplot(aes(.metric, .estimate, fill  = .metric)) +
+  geom_col(color = "black", show.legend = FALSE) +
+  ggsci::scale_fill_locuszoom() +
+  scale_y_continuous(labels = scales::percent, 
+                     limits = c(0, 1)) +
+  labs(x = NULL, y = "Estimate") + 
+  theme(text = element_text(size = 35)) + coord_flip()
+
+
+confution_matrix <- augment(extract_workflow(fitted_track), 
+                            track_test)  %>%
+  mutate(quality = factor(quality, levels = c("Not Cycling","Cycling")))  %>% 
+  conf_mat(quality, .pred_class) 
+
+
+
+as_tibble(confution_matrix$table) %>% 
+  ggplot(aes(x = Truth, y = Prediction, fill = n))  +
+  geom_bin2d(bins = 100, color = "black", size = 2) +
+  geom_text(aes(label = n), size = 30, color = "white") +
+  scale_fill_continuous(type = "viridis")  +
+  labs(y = "Predicted quality", x = "True quality", fill = "Frequency") +
+  theme(legend.position = "none") +
+  coord_fixed() + guides(fill = guide_colourbar(barwidth = 22)) +
+  theme(text = element_text(size = 23))
+
+
+rock1 <- collect_predictions(fitted_track) %>% 
+  janitor::clean_names()  %>% 
+  roc_curve(quality, pred_not_cycling) %>% 
+  
+  ggplot(aes(x =  1 - specificity, y = sensitivity)) +
+  geom_path(size = 3, color = "steelblue") +
+  geom_abline(lty = 2, size = 2, color = "grey") +
+  hrbrthemes::scale_color_ipsum() +
+  labs(x = "1 - Specificity (FPR)",
+    y = "Sensitivity (TPR)", 
+    caption = paste("FPR: False Positive Rate", 
+                    "TPR: True Positive Rate", sep = "\n")) + 
+  theme(legend.position = "top", text = element_text(size = 25)) +
+  coord_fixed()
+```
+
+```{r}
+#models/track_rf_all_predictor_nb4_kasumi_new.rds
+write_rds(extract_workflow(fitted_track), 
+          file = "models/track_rf_all_predictor_nb4_kasumi_adherent_new.rds")
+```
+
+# Semi-supervised approch
+
+## Read the created model and the data
+
+```{r}
+rf_model_quality <- read_rds("models/track_rf_all_predictor_nb4_kasumi_adherent_new.rds")
+
+track_tbl <- read_delim(file = "data/FUCCI_cell_Tracking_Kasumi_220729_feature.txt") %>% 
+  left_join(read_delim("data/annotated_kasumi.txt"), by = join_by(Track_Key)) %>% 
+  dplyr::filter(quality == "unknown") %>% 
+  bind_rows(read_delim(file = "data/FUCCI_cell_Tracking_nb4_230422_new_inhibitors_feature.txt")) %>%
+  bind_rows(read_delim(file = "data/FUCCI_cell_Tracking_adherent_features.txt")) %>% 
+  drop_na() 
+
+```
+
+```{r}
+track_recipe <- recipe(quality ~ ., 
+                       data = track_train) %>%
+  update_role(Track_Key, new_role = "ID")  %>% 
+  step_zv(all_predictors()) %>% 
+  themis::step_downsample(quality) %>% 
+  step_normalize(all_numeric_predictors()) 
+
+
+track_rand_forest <- rand_forest(trees = best_auc$trees,
+                                 mtry = best_auc$mtry,
+                                 min_n = best_auc$min_n) %>%
+  set_engine('ranger', importance = "impurity") %>%
+  set_mode('classification')
+
+
+rf_wf <- workflow() %>% 
+  add_recipe(track_recipe) %>% 
+  add_model(track_rand_forest)
+```
+
+### Predict
+
+First of all we predict on the unlabeled data
+
+```{r}
+prediction_on_unlabeled <- 
+  augment(rf_model_quality, track_tbl) %>% 
+  rowwise() %>% 
+  mutate(pred_prob = max(`.pred_Not Cycling`, .pred_Cycling))  %>%  
+  ungroup()
+
+prediction_on_unlabeled %>% 
+  ggplot(aes(pred_prob)) +
+  geom_histogram(fill = "steelblue", color = "steelblue", bins = 50) +
+  geom_vline(xintercept = 0.75, linetype = "dashed", size = 2,
+             color = "grey70") +
+  labs(x = "Predicted confidence", y = NULL) +
+  theme(text = element_text(size = 25))
+
+thresholds <- seq(0.5, 1, 0.01)
+models <- map(.x = thresholds, .f = function(x){
+  tracks_to_add <- prediction_on_unlabeled %>% #unlabelled data
+    filter(pred_prob > x)  %>% # filtro quelli con quella cerca predicted prob
+    select(-quality, -`.pred_Not Cycling`, -.pred_Cycling, -pred_prob) %>% 
+    rename(quality = .pred_class) 
+  
+  data_tbl <- tracks_to_add  %>% 
+    bind_rows(track_train) 
+  
+  
+  model_rf <- fit(object = rf_wf, data = data_tbl)
+  return(model_rf)
+}) %>%  set_names(paste0("threshold:", 
+                         thresholds))
+
+vect_accuracy  <- map(models, ~ 
+                        augment(.x,  track_test)  %>% 
+                        mutate(quality = as.factor(quality)) %>% 
+                        accuracy(quality, .pred_class))
+
+
+### plot the accuracy 
+p1 <- map_dfr(vect_accuracy, bind_rows, .id = "threshold") %>% 
+  mutate(threshold = str_remove(threshold, "threshold:")) %>% 
+  ggplot(aes(threshold, .estimate, group = .estimator)) +
+  geom_line(color = "steelblue", size = 3) +
+  geom_point(color ="steelblue", size = 6) +
+  theme(text = element_text(size = 20)) +
+  labs(x = "Predicted confidence", y = "Accuracy")
+
+vect_auc  <- map(models, ~  augment(.x,  track_test)  %>% 
+                   mutate(quality = as.factor(quality)) %>% 
+                   roc_auc(quality, `.pred_Not Cycling`))
+
+p2 <- map_dfr(vect_auc, bind_rows, .id = "threshold") %>% 
+  mutate(threshold = str_remove(threshold, "threshold:")) %>% 
+  ggplot(aes(threshold, .estimate, group = .estimator)) +
+  geom_line(color = "steelblue", size = 3) +
+  geom_point(color ="steelblue", size = 6) +
+  theme(text = element_text(size = 20)) +
+  labs(x = "Predicted confidence", y = "Area Under the Curve (AUC)")
+
+p1 / p2
+
+map_dfr(vect_auc, bind_rows, .id = "threshold") %>% 
+  mutate(threshold = str_remove(threshold, "threshold:")) %>% 
+  slice_max(.estimate, n = 1)
+
+
+
+
+vect_sensitivity  <- map(models, ~  augment(.x,  track_test)  %>% 
+                           mutate(quality = as.factor(quality)) %>% 
+                           sensitivity(quality, .pred_class))
+
+map_dfr(vect_sensitivity, bind_rows, .id = "threshold") %>% 
+  mutate(threshold = str_remove(threshold, "threshold:")) %>% 
+  ggplot(aes(threshold, .estimate, group = .estimator)) +
+  geom_line(color = "steelblue", size = 3) +
+  geom_point(color ="steelblue", size = 6) +
+  theme(text = element_text(size = 20)) +
+  labs(x = "Predicted confidence", y = "Sensitivity")
+
+confution_matrix <- augment(models$`threshold:0.75`,  track_test) %>%  
+  mutate(quality = as.factor(quality)) %>% 
+  mutate(quality = factor(quality, levels = c("Not Cycling","Cycling")))  %>% 
+  conf_mat(quality, .pred_class) 
+
+as_tibble(confution_matrix$table) %>% 
+  ggplot(aes(x = Truth, y = Prediction, fill = n))  +
+  geom_bin2d(bins = 100, color = "black", size = 2) +
+  geom_text(aes(label = n), size = 30, color = "white") +
+  scale_fill_continuous(type = "viridis")  +
+  labs(y = "Predicted quality", x = "True quality", fill = "Frequency") +
+  theme(legend.position = "none") +
+  coord_fixed() + guides(fill = guide_colourbar(barwidth = 22)) +
+  theme(text = element_text(size = 23))
+
+
+rock2 <- augment(models$`threshold:0.98`,  track_test) %>% 
+  janitor::clean_names()  %>%  
+  roc_curve(quality, pred_not_cycling) %>% 
+  
+  ggplot(aes(x =  1 - specificity, y = sensitivity)) +
+  geom_path(size = 3, color = "steelblue") +
+  geom_abline(lty = 2, size = 2, color = "grey") +
+  hrbrthemes::scale_color_ipsum() +
+  labs(x = "1 - Specificity (FPR)",
+    y = "Sensitivity (TPR)", 
+    caption = paste("FPR: False Positive Rate", 
+                    "TPR: True Positive Rate", sep = "\n")) + 
+  theme(legend.position = "top", text = element_text(size = 25)) +
+  coord_fixed()
+rock1 + rock2
+
+predicted <- augment(models$`threshold:0.98`,  track_test) %>% 
+  mutate(quality = as.factor(quality)) %>% 
+  select(Track_Key, quality, .pred_class)  
+
+```
+
+# Save model
+
+```{r}
+## Final model 
+
+write_rds(models$`threshold:0.98`, 
+          file = "models/random_forest_model.rds")
+
+```
+
+# Create Docker container for the model
+
+```{r}
+library(vetiver)
+library(pins)
+rf_semi_supervised <- 
+  read_rds("models/random_forest_model.rds")
+
+v <- vetiver_model(rf_semi_supervised, "random_forest_semi_supervised")
+v
+```
+
+```{r}
+board <- board_folder(versioned = TRUE, path = "pins/") 
+vetiver_pin_write(board, v)
+```
+
+Creating new version '20230210T084446Z-8eb39' Writing to pin 'rf_semi_sup'
+
+Create a Model Card for your published model • Model Cards provide a framework for transparent, responsible reporting • Use the vetiver `.Rmd` template as a place to start
+
+```{r}
+vetiver_write_docker(v)
+vetiver_prepare_docker(board, "random_forest_semi_supervised")
+```
+
+```{bash}
+docker build  --platform linux/amd64 -t  random_forest_semi_supervised .
+```
+
+```{bash}
+docker run --rm -p 8000:8000 random_forest_semi_supervised
+```
+
+Once the docker coontainer is running
+
+```{r}
+model_rf_vt <- vetiver_endpoint("http://127.0.0.1:8000/predict")
+model_rf_vt
+
+example_tracks <- 
+  read_delim(file = "data/FUCCI_cell_Tracking_Kasumi_220729_feature.txt") %>% 
+  left_join(read_delim("data/annotated_kasumi.txt"), by = join_by(Track_Key)) %>% 
+  dplyr::filter(quality == "unknown") %>%  
+  drop_na()  %>%  
+  slice_sample(n = 10)
+
+augment(model_rf_vt, example_tracks)
+```
+

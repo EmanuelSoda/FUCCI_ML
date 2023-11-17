@@ -1,35 +1,21 @@
-#' @title Split tracks into single cell cycle
-#' 
-#' @description This function implements a simple linear O(n) method, where n is 
-#' the number of frames, to split tracks containing a cell and its daughter 
-#' into single-cell tracks for their entire cell cycle life.
-#' 
-#' @param track A data frame containing the track and the measured intensities, 
-#' and optionally other information.
-#' 
-#' @return A list of data frames. Each data frame represents a single cell with 
-#' its correct cell cycle phases. The data frames include additional columns 
-#' such as 'red_duration', 'green_duration', 'orange_duration', and 'Track_Key'.
-#' 
-#' @details The function iterates through the frames in the input track and 
-#' identifies the phases (red, green, orange) of the cell cycle. It splits the 
-#' track into individual cycles, adding duration information and a unique 
-#' identifier ('Track_Key') for each cycle. Any incomplete or incorrect cycles 
-#' are excluded from the results.
-#' 
+#' Split Cell Cycle
+#'
+#' This function takes a data frame representing cell cycle observations and splits it into distinct cycles based on the G1, S, and G2/M phases.
+#'
+#' @param track A data frame containing cell cycle observations with a "phase" column indicating the cell cycle phase.
+#'
+#' @return A list of data frames, each representing a distinct cell cycle with added columns for red, orange, and green durations.
+#' @details The function identifies cell cycle phases based on the provided observations and splits the data into cycles. 
+#' It also checks for incorrect cycles and removes them.
+#'
+#' @export
 #' @examples
-#' \dontrun{
 #' # Example usage:
-#' track_data <- read.csv("cell_track_data.csv")
-#' split_cycles_result <- split_cell_cycle(track_data)
-#' }
+#' data <- read.csv("cell_cycle_data.csv")
+#' cycles <- split_cell_cycle(data)
 #'
-#' @seealso 
-#' \code{\link{lubridate::as_date}}, \code{\link{dplyr::mutate}}, 
-#' \code{\link{dplyr::group_by}}, \code{\link{dplyr::ungroup}}, 
-#' \code{\link{dplyr::rbind}}
-#'
-
+#' @seealso \code{\link{change_color}}
+#' 
 split_cell_cycle <- function(track) {
     # Initialization of the three phases = colors
     red <-  0
@@ -41,43 +27,49 @@ split_cell_cycle <- function(track) {
     i <- 1
     results[[1]] <- data.frame()
     
-    length_track <- nrow(track) 
+    first_red <- NA
+    last_red <- NA
+    length_track <- nrow(track)
+    ### A cell cycle is the time between two green observations
+    
     for (frame in 1:length_track) {
-        if (orange == 0 & red == 0 & track[frame, ]$phase == "S") {
-            results[[i]] <- rbind(results[[i]], track[frame, ])
-            green <- green + 1
+        if (orange == 0 & red == 0 & green == 0 & track[frame, ]$phase == "G1") {
+            first_red <- frame
         }
         
-        if (track[frame, ]$phase == "G2/M" & green > 0 & red == 0) {
-            results[[i]] <- rbind(results[[i]], track[frame, ])
-            orange <- orange + 1
+        if (orange > 0 & red > 0 & green > 0 & track[frame, ]$phase == "G1" &&
+            (track[frame - 1, ]$phase == "G2/M" | track[frame - 1, ]$phase == "S")) {
+            last_red <- frame
         }
         
-        if (track[frame,]$phase == "G1" & green > 0 &  orange > 0) {
-            results[[i]] <- rbind(results[[i]], track[frame, ])
+        if (track[frame,]$phase == "G1" & green == 0 &  orange == 0) {
             red <- red + 1
         }
         
-        # NB: Actually after one cycle usually there is a new orange but this 
-        # has to be skipped because is biologically wrong
-        if (track[frame, ]$phase == "S" & green > 0 & orange > 0  & red > 0) { 
+        if (track[frame, ]$phase == "G2/M" & red > 0 & green == 0) {
+            orange <- orange + 1
+        }
+        
+        if (track[frame, ]$phase == "S" & orange > 0 & red > 0)  {
+            green <- green + 1
+        }
+        
+        if (!is.na(first_red) & !is.na(last_red) 
+            & red > 0 & orange > 0 & green > 0) {
+            results[[i]] <- rbind(results[[i]], track[first_red:(last_red -1), ])
             results[[i]]$red_duration <- red
-            results[[i]]$green_duration <- green
             results[[i]]$orange_duration <- orange
-            results[[i]]$Track_Key <- paste0(results[[i]]$Track_Key, "_cycle:", i)
+            results[[i]]$green_duration <- green
+            results[[i]]$Track_Key <-
+                paste0(unique(track$Track_Key), "_cycle:", i)
             i <- i + 1
+            
             results[[i]] <- data.frame()
-            results[[i]] <- rbind(results[[i]], track[frame,])
             red <- 0
             green <- 0
             orange <- 0
-        }
-        
-        if (frame ==  length_track &green > 0 & orange > 0  & red > 0) { 
-            results[[i]]$red_duration <- red
-            results[[i]]$green_duration <- green
-            results[[i]]$orange_duration <- orange
-            results[[i]]$Track_Key <- paste0(results[[i]]$Track_Key, "_cycle:", i)
+            first_red <- NA
+            last_red <- NA
         }
     }
     
@@ -89,5 +81,67 @@ split_cell_cycle <- function(track) {
         }
     }
     
+    results <- map(results, change_color)
     return(results)
-} 
+}
+
+
+
+#' Change Color
+#'
+#' This function adjusts the cell cycle phase colors based on specific conditions.
+#'
+#' @param track A data frame containing cell cycle observations with a "phase" column indicating the cell cycle phase.
+#'
+#' @return The modified data frame with adjusted cell cycle phase colors.
+#' @details The function modifies cell cycle phase colors based on specific conditions, such as correcting orange phases before green and red phases after green.
+#'
+#' @export
+#' @examples
+#' # Example usage:
+#' modified_data <- change_color(data)
+#'
+#' @seealso \code{\link{split_cell_cycle}}
+#'
+### If I have an orange before green this is actually a green
+### if I have a orange after a red this is actually red
+### This because the degradation is not immediate
+change_color <- function(track) {
+    red <-  0
+    orange <- 0
+    green <- 0
+    last_red <- NA
+    length_track <- nrow(track)
+    for (frame in 1:length_track) {
+        if (track[frame, ]$phase == "G1" & orange == 0 & green == 0 ) {
+            red <- red + 1
+        }
+        
+        if (track[frame, ]$phase == "G2/M" & red > 0 & green == 0) {
+            orange <- orange + 1
+        }
+        
+        if (track[frame, ]$phase == "S" & orange > 0 & red > 0) {
+            green <- green + 1
+        }
+        
+        if (red > 0 & green == 0 & track[frame, ]$phase == "G2/M") {
+            last_red <- frame -1
+            track[frame, "phase"] <- "G1/S" 
+        }
+        
+        # If a see a red but the last position of red is already present is actually
+        # a yellow
+        if (red > 0 & green == 0 & track[frame, ]$phase == "G1" & !is.na(last_red)) {
+            track[frame, "phase"] <- "G1/S" 
+        }
+        
+    }
+    return(track)
+}
+
+
+
+
+
+
