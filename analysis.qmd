@@ -23,7 +23,6 @@ colors <- c(color_HUE, color_GREEN, color_RED)
 cond <-  c("DMSO", "Ribociclib 50nM", "Ribociclib 75nM", "Ribociclib 100nM",
            "Ribociclib 125nM", "Ribociclib 150nM", "PF 25nM", "PF 50nM",
            "PF 75nM", "PF 100nM", "PF 125nM", "Palbociclib 50nM")
-setwd("~/Documents/IEO/FUCCI_cell_Tracking/")
 ```
 
 # Preprocessing
@@ -31,7 +30,7 @@ setwd("~/Documents/IEO/FUCCI_cell_Tracking/")
 In this chunk of code the splitted csv files in this case $150$ are read and concatenated in one big table. Then the filename is used to create column for the demultiplexing of the conditions.
 
 ```{r Data Preprocessing, eval=FALSE}
-path <- "data/230421_Thunder_hsb_nb4_q03/"
+path <- "raw_data/nb4_inhibitors//"
 filelist <- 
   list.files(path=path, pattern = "*.csv")
 
@@ -93,7 +92,6 @@ data_table_imputed <-
   ungroup() %>% 
   drop_na(MEAN_GREEN, MEAN_RED, HUE)  
 
-
 lambda <- 0.0001
 data_table_imputed <-  data_table_imputed %>% 
   arrange(FRAME) %>% 
@@ -128,16 +126,7 @@ data_table <-
 ```
 
 ```{r,echo=FALSE}
-reactable(
- mutate(data_table, across(where(is.numeric), round, 3)),
-  defaultColDef = colDef(
-    align = "center",
-    minWidth = 70,
-    headerStyle = list(background = "#f7f7f8")
-  ),
-  bordered = TRUE,
-  highlight = TRUE
-)
+data_table
 ```
 
 ## Normalize data
@@ -158,26 +147,9 @@ data_table <- data_table %>%
   ungroup() 
 ```
 
-```{r,echo=FALSE}
-reactable(
- mutate(data_table, across(where(is.numeric), round, 3)),
-  defaultColDef = colDef(
-    align = "center",
-    minWidth = 70,
-    headerStyle = list(background = "#f7f7f8")
-  ),
-  bordered = TRUE,
-  highlight = TRUE
-)
-```
-
 ## Visualize a sample of the tracks
 
 We can select at random 30 tracks to have a look to the data. As we can notice that lots of tracks are wrong and only for example following the tracks are acceptable:
-
--   **A_4_R25_18**
-
--   **A_4_R24_22**
 
 ```{r}
 set.seed(42)
@@ -228,20 +200,6 @@ rm(tsfeature_tbl_green, tsfeature_tbl_red)
 tsfeature_tbl %>% 
   write_delim("data/FUCCI_cell_Tracking_nb4_230422_new_inhibitors_feature.txt")
 ```
-
-```{r,echo=FALSE}
-reactable(
- mutate(tsfeature_tbl, across(where(is.numeric), round, 3)),
-  defaultColDef = colDef(
-    align = "center",
-    minWidth = 70,
-    headerStyle = list(background = "#f7f7f8")
-  ),
-  bordered = TRUE,
-  highlight = TRUE
-)
-```
-
 ## Quality prediction
 
 Once the feature are extracted the trained model can be used to predict the quality.
@@ -326,18 +284,6 @@ data_table_good %>%
   write_delim("filtered_good/NB4_230421_new_inhibitors_good.txt")
 ```
 
-```{r,echo=FALSE}
-reactable(
- mutate(data_table_good, across(where(is.numeric), round, 3)),
-  defaultColDef = colDef(
-    align = "center",
-    minWidth = 70,
-    headerStyle = list(background = "#f7f7f8")
-  ),
-  bordered = TRUE,
-  highlight = TRUE
-)
-```
 
 ## Visualize phase annotation
 
@@ -383,19 +329,6 @@ split_cell_cycle_splitted <-
 split_cell_cycle_splitted %>% 
   distinct(Track_Key, Condition) %>% 
   dplyr::count(Condition)
-```
-
-```{r,echo=FALSE}
-reactable(
- mutate(split_cell_cycle_splitted, across(where(is.numeric), round, 3)),
-  defaultColDef = colDef(
-    align = "center",
-    minWidth = 70,
-    headerStyle = list(background = "#f7f7f8")
-  ),
-  bordered = TRUE,
-  highlight = TRUE
-)
 ```
 
 If we use the same visualization as before we can now see that each track now identify only one cell.
@@ -480,7 +413,7 @@ reactable(summary,
 NB4_22_04_22 <- list(split_cell_cycle_NB4_22_04_22  = split_cell_cycle_splitted,
                         summary_NB4_22_04_22  = summary)
 
-write_rds(NB4_22_04_22,file = "NB4_22_04_22_new_model.rds")
+write_rds(NB4_22_04_22,file = "NB4_22_04_22.rds")
 ```
 
 ```{r cycle_vis}

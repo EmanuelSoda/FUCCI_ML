@@ -8,11 +8,15 @@
 
 The pipeline is created using the [tidymodels](https://www.tidymodels.org/) framework. The random forest model trained and stored as docker container can be found [here](https://hub.docker.com/repository/docker/emanuelsoda/rf_semi_sup/general) .
 
-The model stored as `.rds` file can be found [here](models/random_forest_model.rds)
+The model stored as `.rds` file can be found [here](models/random_forest_model.rds).
 
 ![The Machine Learning pipeline followed to create the quality model. Using timetk time-series associated features are extracted from the list of manually annotated tracks. A random forest model is then trained to predict whether a track is cycling or not.](images/model_creation.png)
 
+NB: If the provided model does not yield satisfactory results for your data, we recommend provided pipeline to train a new model tailored to your specific dataset. While this process involves some data annotation, tidymodels offers a variety of models that are not data-intensive and perform well on a low amount of data.
+
 ## 1. Inference
+
+To extract the time series feature the function `timetk_feature_extraction()`. We suggest to have a look to the official [time_tk](https://business-science.github.io/timetk/) page.
 
 ![An unannotated track can be fed to the model to predict whether it is cycling or not](images/inference.png)
 
@@ -20,7 +24,7 @@ After training the model, making predictions is straightforward. Simply load the
 
 ```         
 rf_model_quality <- 
-  readr::read_rds("models/rf_model_semi_supervised0.9.rds")
+  readr::read_rds("models/random_forest_model.rds")
   
 parsnip::augment(rf_model_quality, tsfeature_tbl)
 ```
