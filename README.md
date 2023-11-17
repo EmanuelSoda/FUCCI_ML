@@ -1,12 +1,6 @@
 # [Automated workflow for the cell cycle analysis of (non-)adherent cells using a machine learning approach]()
 
-***Kourosh Hayatigolkhatmi***^**1**^*, **Chiara Soriani***^**1**^*, **Emanuel Soda***^**1**^*, Elena Ceccacci*^1^*, Oualid El Menna*^1^*, Sebastiano Peri*^1^*, Ivan Negrelli*^2^*, Giacomo Bertolini*^2^*, Gian Martino Franchi*^2^*, Roberta Carbone*^2^*, Saverio Minucci*^1,3^*, Simona Rodighiero*^1^
-
-^1^Department of Experimental Oncology, European Institute of Oncology-IRCCS, Via Adamello 16, 20139, Milano, Italy.
-
-^2^Tethis S.p.A., Milan, Italy.
-
-^3^Department of Oncology and Hemato-Oncology, University of Milan, Milan, Italy.
+***Kourosh Hayatigolkhatmi**, **Chiara Soriani**, **Emanuel Soda**, Elena Ceccacci, Oualid El Menna, Sebastiano Peri, Ivan Negrelli, Giacomo Bertolini, Gian Martino Franchi, Roberta Carbone, Saverio Minucci, Simona Rodighiero*
 
 # Model Creation
 
