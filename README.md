@@ -23,7 +23,21 @@ rf_model_quality <-
 parsnip::augment(rf_model_quality, tsfeature_tbl)
 ```
 
+# Phase assignment
+
+The normalized HUE intensity value for cycling cells serves as a basis for assigning the cell cycle phase according to the FUCCI construct. Various threshold values can be employed, but based on empirical testing, we recommend considering the following threshold:
+
+```         
+| **Phase** | **Lower threshold** | **Upper threshold** |
+|-----------|---------------------|---------------------|
+| G1        | 0                   | 0.65                |
+| G2/M      | 0.65                | 0.85                |
+| S         | 0.85                | 1                   |
+```
+
 # Result
+
+The filtered tracks can be used to assess differences among treatment, this could be as simple as grouping the
 
 ![Waterfall plot of the "sorted" and "splitted" cells. Each row corresponds to a cell.](images/result_1.png)
 
